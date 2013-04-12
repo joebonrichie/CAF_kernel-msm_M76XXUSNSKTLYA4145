@@ -1656,6 +1656,12 @@ static int rmt_storage_probe(struct platform_device *pdev)
 	if (ret)
 		pr_err("%s: Failed to register reboot notifier", __func__);
 
+/* Integrate CRs-Fixed: 419695 , 20121219 */
+	ret = register_reboot_notifier(&rmt_storage_reboot_notifier);
+	if (ret)
+		pr_err("%s: Failed to register reboot notifier", __func__);
+/* Integrate CRs-Fixed: 419695 , 20121219 */
+
 	ret = sysfs_create_group(&pdev->dev.kobj, &dev_attr_grp);
 	if (ret)
 		pr_err("%s: Failed to create sysfs node: %d\n", __func__, ret);

@@ -42,12 +42,22 @@
 #include <linux/leds.h>
 #include <linux/pm_runtime.h>
 
+/*++ Tracy - 20121003 Add for using ++*/
+#include <mach/vreg.h>
+#include <linux/gpio.h>
+#include <linux/leds-lm3533.h>
+/*-- Tracy - 20121003 Add for using --*/
+
 #define MSM_FB_C
 #include "msm_fb.h"
 #include "mddihosti.h"
 #include "tvenc.h"
 #include "mdp.h"
 #include "mdp4.h"
+// 121005 add by JB_VB start
+#include "mipi_dsi.h"
+
+// 121005 add by JB_VB end
 
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MSM_FB_NUM	3
@@ -66,7 +76,13 @@ unsigned long backlight_duration = (HZ/20);
 static struct platform_device *pdev_list[MSM_FB_MAX_DEV_LIST];
 static int pdev_list_cnt;
 
+/*++ Tracy - 20121003 Add for using ++*/
+static int LCM_flag;
+static int logo_init = 0;
+/*-- Tracy - 20121003 Add for using --*/
+
 int vsync_mode = 1;
+
 
 #define MAX_BLIT_REQ 256
 
@@ -405,6 +421,8 @@ static int msm_fb_probe(struct platform_device *pdev)
 	if (err < 0)
 		printk(KERN_ERR "pm_runtime: fail to set active.\n");
 	pm_runtime_enable(mfd->fbi->dev);
+	
+#ifndef CONFIG_LEDS_CHIP_LM3533	 //Edison change backlight regester place to board init ++
 #ifdef CONFIG_FB_BACKLIGHT
 	msm_fb_config_backlight(mfd);
 #else
@@ -416,6 +434,7 @@ static int msm_fb_probe(struct platform_device *pdev)
 			lcd_backlight_registered = 1;
 	}
 #endif
+#endif //Edison change backlight regester place to board init --
 
 	pdev_list[pdev_list_cnt++] = pdev;
 	msm_fb_create_sysfs(pdev);
@@ -843,13 +862,22 @@ void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 		bl_level_old = temp;
 	}
 }
+// tracy 20121026 sleep current ++
+DEFINE_MUTEX(msm_fb_vreg_set);
+// tracy 20121026 sleep current --
 
 static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 			    boolean op_enable)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	struct msm_fb_panel_data *pdata = NULL;
+	/*++ Tracy - 20121003 Add for using ++*/
+	struct vreg *vreg_l1;
+	/*-- Tracy - 20121003 Add for using --*/
 	int ret = 0;
+// tracy 20121026 sleep current ++
+int update_vreg =0;
+// tracy 20121026 sleep current --
 
 	if (!op_enable)
 		return -EPERM;
@@ -863,7 +891,33 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
 		if (!mfd->panel_power_on) {
-			msleep(16);
+			/*++ Tracy - 20121003 Modify for using ++*/
+			vreg_l1= vreg_get(NULL, "rfrx1");
+   			vreg_set_level(vreg_l1, 3000);
+   			vreg_enable(vreg_l1);
+// tracy 20121026 sleep current ++
+			mutex_lock(&msm_fb_vreg_set);
+			update_vreg = pdata->vreg_control(1);
+			mutex_unlock(&msm_fb_vreg_set);
+		
+			if(update_vreg)		{
+				printk(KERN_ERR "Tracy:msm_fb_blank_panel_HW_reset_start\n");
+			gpio_set_value(34, 1);	
+			msleep(10);	
+			/*lcm reset pin*/
+			gpio_set_value(34, 0);
+			msleep(10);
+			gpio_set_value(34, 1);
+	}else{
+				printk(KERN_NOTICE "not performing lcm hw reset \n");
+			}
+// tracy 20121026 sleep current --
+
+			if(logo_init == 1)
+			{
+				//tracy flag for check first call pandisplay function
+				LCM_flag = 1;
+			}
 			ret = pdata->on(mfd->pdev);
 			if (ret == 0) {
 				down(&mfd->sem);
@@ -882,6 +936,7 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 */
 			}
 		}
+/*-- Tracy - 20121003 Modify for using --*/
 		break;
 
 	case FB_BLANK_VSYNC_SUSPEND:
@@ -900,10 +955,19 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 			up(&mfd->sem);
 			cancel_delayed_work_sync(&mfd->backlight_worker);
 
-			msleep(16);
+			/*++ Tracy - Modify for using ++*/
+			msleep(10);
+			/*-- Tracy - Modify for using --*/
+
 			ret = pdata->off(mfd->pdev);
 			if (ret)
 				mfd->panel_power_on = curr_pwr_state;
+// tracy 20121026 sleep current ++
+
+				mutex_lock(&msm_fb_vreg_set);
+				update_vreg = pdata->vreg_control(0);
+				mutex_unlock(&msm_fb_vreg_set);
+// tracy 20121026 sleep current --
 
 			mfd->op_enable = TRUE;
 		}
@@ -1005,6 +1069,11 @@ static void msm_fb_imageblit(struct fb_info *info, const struct fb_image *image)
 static int msm_fb_blank(int blank_mode, struct fb_info *info)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+	//[Arima Edison] add a condition for power off charge++
+	if(blank_mode==4 && (boot_reason==0x40 || boot_reason==0x20) )  
+		return 0;
+	else
+	//[Arima Edison] add a condition for power off charge 	
 	return msm_fb_blank_sub(blank_mode, info, mfd->op_enable);
 }
 
@@ -1468,7 +1537,14 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 		;
 #endif
 	ret = 0;
-
+if(logo_init == 0)
+	{
+		msm_fb_resume_sw_refresher(mfd);
+		mdp_set_dma_pan_info(fbi, NULL, TRUE);
+		msm_fb_blank_sub(FB_BLANK_UNBLANK, fbi, mfd->op_enable);
+		mdp_dma_pan_update(fbi);
+		lm3533_backlight_control(500);// [Arima Jim] add for boot backlight on
+	}
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if (hdmi_prim_display || mfd->panel_info.type != DTV_PANEL) {
 		mfd->early_suspend.suspend = msmfb_early_suspend;
@@ -1754,6 +1830,15 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 
 		dirtyPtr = &dirty;
 	}
+	//tracy 20121210 fix flash after sonylogo when chargeing++
+	if(logo_init == 0&& (boot_reason==0x40 || boot_reason==0x20) )
+	{
+			msm_fb_stop_sw_refresher(mfd);
+			
+		logo_init = 1;
+		}
+	
+	//tracy 20121210 fix flash after sonylogo when chargeing--
 	complete(&mfd->msmfb_update_notify);
 	mutex_lock(&msm_fb_notify_update_sem);
 	if (mfd->msmfb_no_update_notify_timer.function)
@@ -1773,12 +1858,32 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 			return -EINVAL;
 		}
 	}
+	#endif
+	/*-- Tracy - 20121003 Modify for using --*/
 
 	mdp_set_dma_pan_info(info, dirtyPtr,
 			     (var->activate == FB_ACTIVATE_VBL));
 	mdp_dma_pan_update(info);
 	up(&msm_fb_pan_sem);
 
+#ifdef FIH_MACH_TAMSUI_NAN 	
+	/*++ SONY, NANHU, Tracy - 20121003 Modfiy for using ++*/
+	if(logo_init==0)
+	{
+		msm_fb_stop_sw_refresher(mfd);
+		logo_init = 1;
+	}
+	else if ((logo_init==1)&&(LCM_flag == 1))
+	{
+		lm3533_backlight_control(255);//[Arima Jim] add for wake up backlight on
+		LCM_flag = 0;
+	}
+	/*-- SONY, NANHU, Tracy - 20121003 Modfiy for using --*/
+#endif
+
+/* FIXME! Nanhu may require a lot of the code below to be #ifdef 0 and may or may not require
+the #ifdef above, dependant on CAF changes */
+	
 	if (unset_bl_level && !bl_updated)
 		schedule_delayed_work(&mfd->backlight_worker,
 				backlight_duration);
