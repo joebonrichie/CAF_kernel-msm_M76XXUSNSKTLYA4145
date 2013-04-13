@@ -42,11 +42,11 @@
 #include <linux/leds.h>
 #include <linux/pm_runtime.h>
 
-/*++ Tracy - 20121003 Add for using ++*/
+#ifdef CONFIG_FIH_PROJECT_NAN
 #include <mach/vreg.h>
 #include <linux/gpio.h>
 #include <linux/leds-lm3533.h>
-/*-- Tracy - 20121003 Add for using --*/
+#endif
 
 #define MSM_FB_C
 #include "msm_fb.h"
@@ -54,10 +54,9 @@
 #include "tvenc.h"
 #include "mdp.h"
 #include "mdp4.h"
-// 121005 add by JB_VB start
+#ifdef CONFIG_FIH_PROJECT_NAN
 #include "mipi_dsi.h"
-
-// 121005 add by JB_VB end
+#endif
 
 #ifdef CONFIG_FB_MSM_TRIPLE_BUFFER
 #define MSM_FB_NUM	3
@@ -76,13 +75,11 @@ unsigned long backlight_duration = (HZ/20);
 static struct platform_device *pdev_list[MSM_FB_MAX_DEV_LIST];
 static int pdev_list_cnt;
 
-/*++ Tracy - 20121003 Add for using ++*/
+#ifdef CONFIG_FIH_PROJECT_NAN
 static int LCM_flag;
 static int logo_init = 0;
-/*-- Tracy - 20121003 Add for using --*/
-
+#endif
 int vsync_mode = 1;
-
 
 #define MAX_BLIT_REQ 256
 
@@ -130,7 +127,9 @@ static int msm_fb_ioctl(struct fb_info *info, unsigned int cmd,
 static int msm_fb_mmap(struct fb_info *info, struct vm_area_struct * vma);
 static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
 						struct mdp_bl_scale_data *data);
+#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 static void msm_fb_scale_bl(__u32 *bl_lvl);
+#endif
 
 #ifdef MSM_FB_ENABLE_DBGFS
 
@@ -140,6 +139,11 @@ static void msm_fb_scale_bl(__u32 *bl_lvl);
 int msm_fb_debugfs_file_index;
 struct dentry *msm_fb_debugfs_root;
 struct dentry *msm_fb_debugfs_file[MSM_FB_MAX_DBGFS];
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+static int isDim = 0;
+static int unset_bl_level = 0;
+struct semaphore bkl_sem;
+#endif
 static int bl_scale, bl_min_lvl;
 
 DEFINE_MUTEX(msm_fb_notify_update_sem);
@@ -211,6 +215,134 @@ static struct led_classdev backlight_led = {
 	.brightness	= MAX_BACKLIGHT_BRIGHTNESS,
 	.brightness_set	= msm_fb_set_bl_brightness,
 };
+#endif
+
+#ifndef CONFIG_FIH_PROJECT_NAN
+#ifdef CONFIG_FB_MSM_LOGO
+int draw_logo(struct fb_info *fbi)
+{
+	int retVal = 0;
+
+	fih_load_565rle_image(INIT_IMAGE_FILE);
+	retVal = msm_fb_pan_display(&fbi->var, fbi);
+	return retVal;
+}
+
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+static ssize_t fb_dim_read(struct device *dev,
+        struct device_attribute *attr, char *buf)
+{
+	return snprintf(buf, PAGE_SIZE, "%d\n", isDim);
+}
+static ssize_t fb_dim_write(struct device *dev,
+        struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fb_info *fbi = dev_get_drvdata(dev);
+	struct msm_fb_data_type *mfd = NULL;
+	struct msm_fb_panel_data *pdata = NULL;
+	int last_bl_level = 0;
+	long data = 0;
+	int error = strict_strtol(buf, 10, &data);
+
+	if (error) {
+		printk(KERN_ERR "[DISPLAY]%s: failure, buf <%s>, data <%ld>, err <%d>\n",
+				__func__, buf, data, error);
+	}
+
+	isDim = (int)data;
+	mfd = (struct msm_fb_data_type *)fbi->par;
+	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+	
+	printk(KERN_INFO "[DISPLAY] isDim = %d\n", isDim);
+	
+	if(isDim == 1) {
+		last_bl_level = mfd->bl_level;
+		mfd->bl_level = 1;
+		pdata->set_backlight(mfd);
+		mfd->bl_level = last_bl_level;
+	}	else if(isDim == 2){
+		last_bl_level = mfd->bl_level;
+		mfd->bl_level = 0;
+		pdata->set_backlight(mfd);
+		mfd->bl_level = last_bl_level;
+	}
+	
+	return size;
+}
+static DEVICE_ATTR(dim, 0644, fb_dim_read, fb_dim_write);
+#endif
+static ssize_t display_show_battery(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t size)
+{
+	struct fb_info *fbi= registered_fb[0];
+	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)fbi->par;
+	struct msm_fb_panel_data *pdata = NULL;
+	int last_bl_level = 0;
+	int battery_state = 0;
+	char rlefile[50];
+	long data = 0;
+	int error = strict_strtol(buf, 10, &data);
+
+	if (error) {
+		printk(KERN_ERR "[DISPLAY]%s: failure, buf <%s>, data <%ld>, err <%d>\n",
+				__func__, buf, data, error);
+	}
+
+	battery_state = (int)data;
+	snprintf(rlefile, 50, "/system/etc/chgani/ca0%d.rle", battery_state + 1 );
+
+	printk(KERN_INFO "[DISPLAY]%s state=%d\n", __func__,battery_state);
+	switch (battery_state)
+	{
+		case BATTERY_EMPTY:
+		case BATTERY_LEVEL_01:
+		case BATTERY_LEVEL_02:
+		case BATTERY_LEVEL_03:
+		case BATTERY_LEVEL_04:
+		case BATTERY_LEVEL_05:
+		case BATTERY_FULL:
+	
+			fih_load_565rle_image(rlefile);
+
+			msm_fb_pan_display(&fbi->var, fbi);
+			break;
+
+		case BATTERY_DISP_ON:
+			msm_fb_blank_sub(FB_BLANK_UNBLANK, fbi, mfd->op_enable);
+			break;
+
+		case BATTERY_DISP_OFF:
+
+			last_bl_level = mfd->bl_level;
+			mfd->bl_level = 0;
+			pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+			pdata->set_backlight(mfd);
+			mfd->bl_level = last_bl_level;
+
+			memset(fbi->screen_base, 0x00,
+					fbi->var.xres * fbi->var.yres * fbi->var.bits_per_pixel / 8);
+			msm_fb_blank_sub(FB_BLANK_POWERDOWN, fbi, mfd->op_enable);
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+		down(&bkl_sem);
+		unset_bl_level = mfd->panel_info.bl_max;
+		up(&bkl_sem);
+#endif
+			break;
+
+		case DISP_LOGO:
+			draw_logo(fbi);
+			break;
+
+		default:
+			printk(KERN_ERR "[DISPLAY] Invalid battery state\n");
+			break;
+	}
+
+	return size;
+}
+
+static DEVICE_ATTR(display_battery, 0644, NULL, display_show_battery);
+#endif
 #endif
 
 static struct msm_fb_platform_data *msm_fb_pdata;
@@ -405,7 +537,13 @@ static int msm_fb_probe(struct platform_device *pdev)
 
 	vsync_cntrl.dev = mfd->fbi->dev;
 	mfd->panel_info.frame_count = 0;
+#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 	mfd->bl_level = 0;
+#ifndef CONFIG_FIH_PROJECT_NAN
+	mfd->bl_level = mfd->panel_info.bl_max;
+	unset_bl_level = mfd->bl_level;
+#endif
+#endif
 	bl_scale = 1024;
 	bl_min_lvl = 255;
 #ifdef CONFIG_FB_MSM_OVERLAY
@@ -417,11 +555,18 @@ static int msm_fb_probe(struct platform_device *pdev)
 	rc = msm_fb_register(mfd);
 	if (rc)
 		return rc;
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+	down(&bkl_sem);
+	mfd->bl_level = mfd->panel_info.bl_max;
+	unset_bl_level = mfd->bl_level;
+	up(&bkl_sem);
+#endif
+
 	err = pm_runtime_set_active(mfd->fbi->dev);
 	if (err < 0)
 		printk(KERN_ERR "pm_runtime: fail to set active.\n");
 	pm_runtime_enable(mfd->fbi->dev);
-	
+
 #ifndef CONFIG_LEDS_CHIP_LM3533	 //Edison change backlight regester place to board init ++
 #ifdef CONFIG_FB_BACKLIGHT
 	msm_fb_config_backlight(mfd);
@@ -585,7 +730,6 @@ static int msm_fb_suspend_sub(struct msm_fb_data_type *mfd)
 			}
 		}
 	}
-
 	return 0;
 }
 
@@ -616,6 +760,9 @@ static int msm_fb_resume_sub(struct msm_fb_data_type *mfd)
 			MSM_FB_INFO("msm_fb_resume: can't turn on display!\n");
 	}
 
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+	unset_bl_level = 1;
+#endif
 	return ret;
 }
 #endif
@@ -798,11 +945,17 @@ static void msmfb_early_resume(struct early_suspend *h)
 }
 #endif
 
+#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 static int unset_bl_level, bl_updated;
 static int bl_level_old;
+#endif
 static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
 						struct mdp_bl_scale_data *data)
 {
+#ifndef CONFIG_FIH_PROJECT_NAN
+	pr_info("[DISPLAY]%s: Not support CABL on this board.\r\n", __func__);
+	return 0;
+#else
 	int ret = 0;
 	int curr_bl;
 	down(&mfd->sem);
@@ -818,8 +971,10 @@ static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
 	up(&mfd->sem);
 
 	return ret;
+#endif
 }
 
+#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 static void msm_fb_scale_bl(__u32 *bl_lvl)
 {
 	__u32 temp = *bl_lvl;
@@ -836,6 +991,42 @@ static void msm_fb_scale_bl(__u32 *bl_lvl)
 
 	(*bl_lvl) = temp;
 }
+#endif
+
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
+{
+	struct msm_fb_panel_data *pdata;
+
+	pr_info("[DISPLAY] %s: bkl_lvl = %d\r\n", __func__, bkl_lvl);
+	down(&bkl_sem);
+
+	if (!mfd->panel_power_on || (unset_bl_level !=0)) {
+		unset_bl_level = bkl_lvl;
+		up(&bkl_sem);
+		return;
+	}
+
+	pdata = (struct msm_fb_panel_data *)mfd->pdev->dev.platform_data;
+ 
+	if ((mfd->bl_level == bkl_lvl) && (isDim ==0)) {
+		up(&bkl_sem);
+		pr_info("[DISPLAY] mfd->bl_level == bkl_lvl, skip.\r\n");
+			return;
+	}
+
+	if(isDim!=0){
+		pr_info("[DISPLAY] Reset isDim\r\n");
+		isDim=0;
+	}
+		
+	mfd->bl_level = bkl_lvl;
+	if ((pdata) && (pdata->set_backlight)) {
+		pdata->set_backlight(mfd);
+	}
+	up(&bkl_sem);
+}
+#else
 
 /*must call this function from within mfd->sem*/
 void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
@@ -862,22 +1053,26 @@ void msm_fb_set_backlight(struct msm_fb_data_type *mfd, __u32 bkl_lvl)
 		bl_level_old = temp;
 	}
 }
+#endif
+#ifdef CONFIG_FIH_PROJECT_NAN
 // tracy 20121026 sleep current ++
 DEFINE_MUTEX(msm_fb_vreg_set);
 // tracy 20121026 sleep current --
-
+#endif
 static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 			    boolean op_enable)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
 	struct msm_fb_panel_data *pdata = NULL;
+#ifdef CONFIG_FIH_PROJECT_NAN
 	/*++ Tracy - 20121003 Add for using ++*/
 	struct vreg *vreg_l1;
 	/*-- Tracy - 20121003 Add for using --*/
+	// tracy 20121026 sleep current ++
+	int update_vreg =0;
+	// tracy 20121026 sleep current --
+#endif
 	int ret = 0;
-// tracy 20121026 sleep current ++
-int update_vreg =0;
-// tracy 20121026 sleep current --
 
 	if (!op_enable)
 		return -EPERM;
@@ -891,6 +1086,11 @@ int update_vreg =0;
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
 		if (!mfd->panel_power_on) {
+#ifndef CONFIG_FIH_PROJECT_NAN
+#ifdef CONFIG_FB_MSM_LCDC
+			msleep(16);
+#endif
+#else
 			/*++ Tracy - 20121003 Modify for using ++*/
 			vreg_l1= vreg_get(NULL, "rfrx1");
    			vreg_set_level(vreg_l1, 3000);
@@ -918,6 +1118,7 @@ int update_vreg =0;
 				//tracy flag for check first call pandisplay function
 				LCM_flag = 1;
 			}
+#endif
 			ret = pdata->on(mfd->pdev);
 			if (ret == 0) {
 				down(&mfd->sem);
@@ -936,7 +1137,6 @@ int update_vreg =0;
 */
 			}
 		}
-/*-- Tracy - 20121003 Modify for using --*/
 		break;
 
 	case FB_BLANK_VSYNC_SUSPEND:
@@ -947,29 +1147,61 @@ int update_vreg =0;
 		if (mfd->panel_power_on) {
 			int curr_pwr_state;
 
+/*
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+			int last_bl_level;
+			
+			last_bl_level = mfd->bl_level;
+			mfd->bl_level = 0;
+			pdata->set_backlight(mfd);
+			mfd->bl_level = last_bl_level;
+#endif
+*/
+
 			mfd->op_enable = FALSE;
 			curr_pwr_state = mfd->panel_power_on;
 			down(&mfd->sem);
 			mfd->panel_power_on = FALSE;
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+			down(&bkl_sem);
+			unset_bl_level = -1;
+			up(&bkl_sem);
+#else
 			bl_updated = 0;
 			up(&mfd->sem);
 			cancel_delayed_work_sync(&mfd->backlight_worker);
-
+#endif
+#ifndef CONFIG_FIH_PROJECT_NAN
+#ifdef CONFIG_FB_MSM_LCDC
+			msleep(16);
+#endif
+#else
 			/*++ Tracy - Modify for using ++*/
 			msleep(10);
 			/*-- Tracy - Modify for using --*/
+#endif
 
 			ret = pdata->off(mfd->pdev);
 			if (ret)
 				mfd->panel_power_on = curr_pwr_state;
+#ifdef CONFIG_FIH_PROJECT_NAN
 // tracy 20121026 sleep current ++
 
 				mutex_lock(&msm_fb_vreg_set);
 				update_vreg = pdata->vreg_control(0);
 				mutex_unlock(&msm_fb_vreg_set);
 // tracy 20121026 sleep current --
+#endif
 
 			mfd->op_enable = TRUE;
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+			isDim = 0;
+#endif
+#ifndef CONFIG_FIH_PROJECT_NAN
+		} else {
+			if (pdata->power_ctrl)
+				pdata->power_ctrl(FALSE);
+#endif
 		}
 		break;
 	}
@@ -1069,11 +1301,13 @@ static void msm_fb_imageblit(struct fb_info *info, const struct fb_image *image)
 static int msm_fb_blank(int blank_mode, struct fb_info *info)
 {
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+#ifdef CONFIG_FIH_PROJECT_NAN
 	//[Arima Edison] add a condition for power off charge++
 	if(blank_mode==4 && (boot_reason==0x40 || boot_reason==0x20) )  
 		return 0;
 	else
 	//[Arima Edison] add a condition for power off charge 	
+#endif
 	return msm_fb_blank_sub(blank_mode, info, mfd->op_enable);
 }
 
@@ -1373,10 +1607,14 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 		((PAGE_SIZE - remainder)/fix->line_length) * mfd->fb_page;
 	var->bits_per_pixel = bpp * 8;	/* FrameBuffer color depth */
 	if (mfd->dest == DISPLAY_LCD) {
+#ifdef CONFIG_FIH_PROJECT_NAN
 		if (panel_info->type == MDDI_PANEL && panel_info->mddi.is_type1)
 			var->reserved[4] = panel_info->lcd.refx100 / (100 * 2);
 		else
 			var->reserved[4] = panel_info->lcd.refx100 / 100;
+#else
+			var->reserved[4] = panel_info->mipi.frame_rate;
+#endif
 	} else {
 		if (panel_info->type == MIPI_VIDEO_PANEL) {
 			var->reserved[4] = panel_info->mipi.frame_rate;
@@ -1448,7 +1686,9 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	init_completion(&mfd->pan_comp);
 	init_completion(&mfd->refresher_comp);
 	sema_init(&mfd->sem, 1);
-
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+	sema_init(&bkl_sem, 1);
+#endif
 	init_timer(&mfd->msmfb_no_update_notify_timer);
 	mfd->msmfb_no_update_notify_timer.function =
 			msmfb_no_update_notify_timer_cb;
@@ -1532,11 +1772,31 @@ static int msm_fb_register(struct msm_fb_data_type *mfd)
 	     mfd->index, fbi->var.xres, fbi->var.yres, fbi->fix.smem_len);
 
 #ifdef CONFIG_FB_MSM_LOGO
+#ifdef CONFIG_FIH_PROJECT_NAN
 	/* Flip buffer */
-	if (!load_565rle_image(INIT_IMAGE_FILE, bf_supported))
-		;
+	if (!load_565rle_image(INIT_IMAGE_FILE, bf_supported));
+#else
+	/*MTD-MM-CL-DrawLogo-00+[*/
+	fih_load_565rle_image(INIT_IMAGE_FILE);
+
+	/* File node: /sys/class/graphics/fb?/display_battery */
+	ret = device_create_file(fbi->dev, &dev_attr_display_battery);
+	if (ret) {
+		printk(KERN_ERR "[DISPLAY] %s: create dev_attr_display_battery failed\n",
+				__func__);
+	}
+	/*MTD-MM-CL-DrawLogo-00+]*/
+#endif
+#endif
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+	ret = device_create_file(fbi->dev, &dev_attr_dim);
+	if (ret) {
+		printk(KERN_ERR "[DISPLAY] %s: create dev_attr_dim failed\n",
+				__func__);
+	}
 #endif
 	ret = 0;
+#ifdef CONFIG_FIH_PROJECT_NAN
 if(logo_init == 0)
 	{
 		msm_fb_resume_sw_refresher(mfd);
@@ -1545,6 +1805,7 @@ if(logo_init == 0)
 		mdp_dma_pan_update(fbi);
 		lm3533_backlight_control(500);// [Arima Jim] add for boot backlight on
 	}
+#endif
 #ifdef CONFIG_HAS_EARLYSUSPEND
 	if (hdmi_prim_display || mfd->panel_info.type != DTV_PANEL) {
 		mfd->early_suspend.suspend = msmfb_early_suspend;
@@ -1780,7 +2041,11 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	}
 
 	if (info->node != 0 || mfd->cont_splash_done)	/* primary */
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+		if ((!mfd->op_enable) || (!mfd->panel_power_on) || (isDim == 2))
+#else
 		if ((!mfd->op_enable) || (!mfd->panel_power_on))
+#endif
 			return -EPERM;
 
 	if (var->xoffset > (info->var.xres_virtual - info->var.xres))
@@ -1830,6 +2095,7 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 
 		dirtyPtr = &dirty;
 	}
+#ifdef CONFIG_FIH_PROJECT_NAN
 	//tracy 20121210 fix flash after sonylogo when chargeing++
 	if(logo_init == 0&& (boot_reason==0x40 || boot_reason==0x20) )
 	{
@@ -1839,6 +2105,7 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 		}
 	
 	//tracy 20121210 fix flash after sonylogo when chargeing--
+#endif
 	complete(&mfd->msmfb_update_notify);
 	mutex_lock(&msm_fb_notify_update_sem);
 	if (mfd->msmfb_no_update_notify_timer.function)
@@ -1866,7 +2133,10 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	mdp_dma_pan_update(info);
 	up(&msm_fb_pan_sem);
 
-#ifdef FIH_MACH_TAMSUI_NAN 	
+/* FIXME! (101) See if the nanhu/fih additions are needed. If they arn't remove the additions or at least 
+ * remove the #ifdef 0 for unset_bl_level && bl_updated below
+ */
+#ifdef CONFIG_FIH_PROJECT_NAN 	
 	/*++ SONY, NANHU, Tracy - 20121003 Modfiy for using ++*/
 	if(logo_init==0)
 	{
@@ -1880,14 +2150,29 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	}
 	/*-- SONY, NANHU, Tracy - 20121003 Modfiy for using --*/
 #endif
+#else
+#ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+		down(&bkl_sem);
+		if (unset_bl_level > 0) {
+			pr_info("[DISPLAY]%s: unset_bl_level = %d\r\n", __func__, unset_bl_level);
+			pdata = (struct msm_fb_panel_data *)mfd->pdev->
+				dev.platform_data;
 
-/* FIXME! Nanhu may require a lot of the code below to be #ifdef 0 and may or may not require
-the #ifdef above, dependant on CAF changes */
-	
+			if ((pdata) && (pdata->set_backlight)) {
+				mdelay(50);
+				pdata->set_backlight(mfd);
+			}
+			unset_bl_level = 0;
+		}
+		up(&bkl_sem);
+#else
+#ifdef 0 
 	if (unset_bl_level && !bl_updated)
 		schedule_delayed_work(&mfd->backlight_worker,
 				backlight_duration);
 
+#endif
+#endif
 	++mfd->panel_info.frame_count;
 	return 0;
 }
@@ -3057,6 +3342,8 @@ static int msmfb_overlay_play(struct fb_info *info, unsigned long *argp)
 
 	ret = mdp4_overlay_play(info, &req);
 
+// FIXME! (101) Do we need this ifndef?
+#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 	if (unset_bl_level && !bl_updated)
 		schedule_delayed_work(&mfd->backlight_worker,
 				backlight_duration);
@@ -3075,6 +3362,7 @@ static int msmfb_overlay_play_enable(struct fb_info *info, unsigned long *argp)
 			__func__);
 		return ret;
 	}
+#endif
 
 	mfd->overlay_play_enable = enable;
 
