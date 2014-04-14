@@ -127,14 +127,6 @@ static inline bool is_role_switch_possible(struct hci_dev *hdev)
 	return true;
 }
 
-/*Arima AlvinChen 20130109 add for A2DP&OPP&HFP issue ++++++++++++++++++++*/
-static inline bool is_role_switch_possible(struct hci_dev *hdev)
-{
-	if (hci_conn_hash_lookup_state(hdev, ACL_LINK, BT_CONNECTED))
-		return false;
-	return true;
-}
-/*Arima AlvinChen 20130109 add for A2DP&OPP&HFP issue ---------------------*/
 void hci_acl_connect(struct hci_conn *conn)
 {
 	struct hci_dev *hdev = conn->hdev;
