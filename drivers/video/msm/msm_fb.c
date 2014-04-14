@@ -945,10 +945,10 @@ static void msmfb_early_resume(struct early_suspend *h)
 }
 #endif
 
-#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
+//#ifndef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 static int unset_bl_level, bl_updated;
 static int bl_level_old;
-#endif
+//#endif
 static int mdp_bl_scale_config(struct msm_fb_data_type *mfd,
 						struct mdp_bl_scale_data *data)
 {
@@ -1147,7 +1147,7 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 		if (mfd->panel_power_on) {
 			int curr_pwr_state;
 
-/*
+
 #ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 			int last_bl_level;
 			
@@ -1156,7 +1156,6 @@ static int msm_fb_blank_sub(int blank_mode, struct fb_info *info,
 			pdata->set_backlight(mfd);
 			mfd->bl_level = last_bl_level;
 #endif
-*/
 
 			mfd->op_enable = FALSE;
 			curr_pwr_state = mfd->panel_power_on;
@@ -2030,6 +2029,9 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 	struct mdp_dirty_region dirty;
 	struct mdp_dirty_region *dirtyPtr = NULL;
 	struct msm_fb_data_type *mfd = (struct msm_fb_data_type *)info->par;
+#ifndef CONFIG_FIH_PROJECT_NAN
+	struct msm_fb_panel_data *pdata = NULL;
+#endif
 
 	/*
 	 * If framebuffer is 2, io pen display is not allowed.
@@ -2125,7 +2127,7 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 			return -EINVAL;
 		}
 	}
-	#endif
+
 	/*-- Tracy - 20121003 Modify for using --*/
 
 	mdp_set_dma_pan_info(info, dirtyPtr,
@@ -2149,7 +2151,6 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 		LCM_flag = 0;
 	}
 	/*-- SONY, NANHU, Tracy - 20121003 Modfiy for using --*/
-#endif
 #else
 #ifdef CONFIG_FIH_SW_DISPLAY_BACKLIGHT_CMD_QUEUE
 		down(&bkl_sem);
@@ -2165,13 +2166,13 @@ static int msm_fb_pan_display(struct fb_var_screeninfo *var,
 			unset_bl_level = 0;
 		}
 		up(&bkl_sem);
-#else
-#ifdef 0 
+#endif
+#endif
+#if 0
 	if (unset_bl_level && !bl_updated)
 		schedule_delayed_work(&mfd->backlight_worker,
 				backlight_duration);
 
-#endif
 #endif
 	++mfd->panel_info.frame_count;
 	return 0;
